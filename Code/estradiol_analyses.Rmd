@@ -1,0 +1,429 @@
+---
+title: "Estradiol analyses"
+author: "Lev Kolinski"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+# loading packages
+library(tidyverse)
+library(lme4)
+library(car)
+
+# setting seed for reproducibility
+set.seed(1234)
+
+# Loading data
+e_data<-read.csv("/Users/levkolinski/Desktop/taboga_estradiol/Data/estradiol_dataset.csv", sep = ";") 
+
+e_data<-e_data |> 
+  ## adding in age year column
+  mutate(age_at_sample_years = as.numeric(sub("\\..*", "", age_at_sample))) |> 
+  ## adding in hour column to account for diurnal variation
+  mutate(hour = as.numeric(str_extract(time, "^[^:]+"))) 
+  
+
+duckface_data<-read.csv("/Users/levkolinski/Desktop/taboga_estradiol/Data/duckfaces_dataset.csv", sep = ";")
+```
+
+# **Menarche and E**
+
+## Age at menarche on the population-level
+
+### Approach 1: Mean + 2SD
+
+Adapting methods described in the poster uploaded on Google Drive, I first calculated the mean pre-pubertal fE2 concentration. Because infants/juvs have elevated fE2 when nursing, we need to exclude these individuals when determining what typical pre-pubertal fE2 looks like.
+
+Per Slack communication on 7/17: defining prebuteral E from individuals greater than 2.5 years (def not nursing) and under 3 (def not pubertal)
+
+#### Step 1: Preparing dataset of prepubertal individuals (2.5-3 yo)
+
+```{r,  class.source = 'fold-hide'}
+## calculating average pre-pubertal E2 
+prepubertal_data<-e_data |> 
+  filter(age_at_sample >= 2.5 & age_at_sample <= 3) |>  # we want age 2.5-3...def pre menstruation
+  select(ind_id, age_at_sample, e_conc_ug) 
+```
+
+#### Step 2: Calculating average prepubertal E
+
+```{r}
+prepubertal_e_data <- prepubertal_data |> 
+   summarise(mean_e_conc_ug = mean(e_conc_ug, na.rm = TRUE),
+            sd_e_conc_ug = sd(e_conc_ug, na.rm = TRUE)) 
+
+mean_prepubertal_e_conc_ug <- prepubertal_e_data$mean_e_conc_ug
+sd_prepubertal_e_conc_ug <- prepubertal_e_data$sd_e_conc_ug
+```
+
+#### Step 3: Calculating pubertal threshold E
+
+Using the mean + 2SD approach:
+
+```{r}
+calculated_treshold <- mean_prepubertal_e_conc_ug + 2*sd_prepubertal_e_conc_ug
+
+print(paste("Calculated fE2 threshold for menarche: ", calculated_treshold, " ug/g"))
+```
+
+#### Step 4: Calculating population average age at menarche based on threshold E
+
+Looking at the average age at which the population has an E reading that crosses the threshold E. Restricting dataset to individuals \>3 years old.
+
+```{r}
+## creating df ----
+e_data_age_at_menarche_df <- e_data |>
+  select(c(age_at_sample, age_at_sample_years, e_conc_ug)) |>
+  group_by(age_at_sample) |>
+  mutate(mean_e_at_age = mean(e_conc_ug, na.rm = TRUE),
+         se_e_at_age = sd(e_conc_ug, na.rm = TRUE) / sqrt(n())) |>
+  ungroup() |>
+  arrange(age_at_sample) |>
+  distinct() |> 
+  group_by(age_at_sample_years) |>
+  mutate(mean_e_at_age_years = mean(e_conc_ug, na.rm = TRUE),
+         se_e_at_age_years = sd(e_conc_ug, na.rm = TRUE) / sqrt(n())) |>
+  ungroup() |>
+  select(-e_conc_ug) |>
+  arrange(age_at_sample_years) |>
+  distinct() 
+
+## average_age_at_menarche----
+average_age_at_menarche <- e_data_age_at_menarche_df |> 
+  filter(age_at_sample > 3) |> 
+  filter(mean_e_at_age > calculated_treshold) |> 
+  slice(1) |> 
+  pull(age_at_sample)
+
+
+# standard error of average_age_at_menarche
+se_age_at_menarche <- e_data_age_at_menarche_df |> 
+  filter(age_at_sample > 3) |> 
+  filter(mean_e_at_age > calculated_treshold) |> 
+  summarise(se_age_at_sample = sd(age_at_sample, na.rm = TRUE) / sqrt(n())) |> 
+  pull(se_age_at_sample)
+
+
+print(paste("Calculated average age at menarche: ", average_age_at_menarche, " years"))
+print(paste("SE average age at menarche: ", se_age_at_menarche))
+```
+
+NOTE: This calculated age is definitely too young.
+
+#### Step 5: Trying (and failing) to get normality
+
+The E data is super not normal at the population-level, even after attempting log transformation....I am holding off on any real modeling for now
+
+```{r}
+shapiro.test(e_data_age_at_menarche_df$mean_e_at_age)
+shapiro.test(log(e_data_age_at_menarche_df$mean_e_at_age))
+```
+
+### Plot of fE2 as a function of age: population-level
+
+For interpretability, this plot just has the data sorted into age-years, rather than exact age estimations with lots of decimals
+
+```{r, class.source = 'fold-hide'}
+## get sample size ----
+n_figure_1 <- nrow(e_data)
+
+##Figure 1
+par(mfrow = c(1,1))
+
+ggplot(data = e_data_age_at_menarche_df |> 
+         select(age_at_sample_years, mean_e_at_age_years, se_e_at_age_years) |> 
+         distinct(), aes(x = age_at_sample_years, y = mean_e_at_age_years)) + 
+  geom_smooth() + 
+  geom_point()+
+  geom_vline(xintercept = average_age_at_menarche, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = calculated_treshold, linetype = "dashed", color = "skyblue") +
+  geom_errorbar(aes(ymin = mean_e_at_age_years - se_e_at_age_years, ymax = mean_e_at_age_years + se_e_at_age_years), width = 0.2) +
+  geom_rect(aes(xmin = average_age_at_menarche - 1.96*se_age_at_menarche, xmax = average_age_at_menarche + 1.96*se_age_at_menarche, 
+                ymin = -Inf, ymax = Inf), alpha = 0.05, fill = "pink") +
+  ggtitle(paste0("Average estradiol by age at sample (N = ", n_figure_1, " samples)"))+
+  xlab("Age at sample")+
+  ylab("Fecal estradiol (ug/g)")
+```
+
+Interpreting the graph:
+
+-   The black circles and error bars represent the average age fE2 reading (with standard error) for each age-year for the population
+
+-   The blue line represents the results of a Loess regression, a non-parametric approach to modeling the relationship between x and y. The gray shading around the blue line is the error of the estimate.
+
+-   The dashed light blue line is the calculated prepubertal fE threshold (y = 0.7840325 ug/g)
+
+-   The dashed red line is the calculated average age at puberty (x = 3.22 years)
+
+-   The shaded area around the dashed red line is the 95% CI for the average age at puberty estimate (3.22 ± 1.96\* SE)
+
+## Age at menarche on the individual-level
+
+### Plot of fE2 as a function of age: individual-level
+
+NOTE: I haven't yet calculated individual E thresholds/ages at menarche because I think we are going to want a different approach than mean + 2sd....still working on that.
+
+I am pulling data on females that we have good E coverage for before and after potential menarche...I'm looking for IDs with samples starting at least by age 3. At least 25 samples per ID. That leaves us with the following:
+
+```{r,class.source = 'fold-hide'}
+par(mfrow = c(1,1))
+
+# Panel of all individual females who have good E coverage before and after menarche
+females_for_menarche_panel<-e_data |> 
+  group_by(ind_id) |> 
+  filter(min(age_at_sample)<3) |>
+  mutate(count = n()) |> 
+  ungroup() |> 
+  select(ind_id,count) |> 
+  arrange(desc(count)) |> 
+  distinct() |> 
+  filter(count>25) |> 
+  pull(ind_id)
+
+females_for_menarche_panel_df<- e_data |> 
+  filter(ind_id %in% females_for_menarche_panel) |> 
+  filter(age_at_sample < 8) |>
+  select(ind_id, age_at_sample, sample_id, date, month, time, hour, e_conc_ug, is_pregnant) |> 
+  arrange(ind_id, age_at_sample) 
+n_figure_2 <-nrow(females_for_menarche_panel_df)
+
+ggplot(data = females_for_menarche_panel_df, aes(x = age_at_sample, y = log(e_conc_ug), color = ind_id)) +
+  geom_point()+
+  facet_wrap(~ ind_id)+
+  ggtitle(paste0("Estradiol by age at sample, separated by individual (n = ", n_figure_2, " samples)"))+
+  xlab("Age at sample")+
+  ylab("Log-transformed fecal estradiol (log(ug/g))")+
+  theme(legend.position = "none")
+```
+
+\^Note that the y-axis is log-transformed on this plot
+
+### Modeling E and age
+
+#### Step 1. Assessing normality
+
+```{r}
+shapiro.test(females_for_menarche_panel_df$e_conc_ug) #nope
+ 
+shapiro.test(log(females_for_menarche_panel_df$e_conc_ug)) # log transformation does the trick!
+```
+
+Log transformation does the trick! Data is now normal for our young female panel.
+
+#### Step 2. Modeling E2 and age
+
+I am including individual ID as a random effect. In unadjusted model, fixed effects are month and time of day (accounting for seasonality and diurnal variation) with individual ID included as a random effect. Any other things to control for?\
+\
+The adjusted model includes age as a fixed effect. Age improves the model fit!
+
+```{r}
+unadjusted_e_model <- lmer(log(e_conc_ug) ~  + month + hour+ (1 | ind_id), data = females_for_menarche_panel_df)
+
+adjusted_e_model <- lmer(log(e_conc_ug) ~ age_at_sample + month + hour+ (1 | ind_id), data = females_for_menarche_panel_df)
+
+anova(unadjusted_e_model, adjusted_e_model) # adjusted_e_model fits better
+
+summary(adjusted_e_model)
+
+#checking for multicollinearity -- low (~ 1)
+vif(adjusted_e_model)
+print("No multicollinearity -- yay!")
+```
+
+#### Step 3. Checking model diagnostics
+
+Tldr: model passes diagnostics—yay
+
+```{r}
+# checking model diagnostics
+plot(adjusted_e_model) #resids vs leverage -- pretty good
+lattice::qqmath(adjusted_e_model) ## qq norm plot -- good
+plot(adjusted_e_model, # scale location plot -- pretty good
+     sqrt(abs(resid(.)))~fitted(.),
+     type=c("p","smooth"), col.line=1)
+```
+
+## Menarche and Duck Face
+
+NOTE: I am holding off on reporting on this until we have the updated behavioral data containing group scan observations of duck face....planning to adapt methods from [Sen et al. 2022](https://www.sciencedirect.com/science/article/pii/S0018506X22001581?casa_token=6acu1ntMv9UAAAAA:DE2kCyrQg3ooVPhuqtaTpwmtINgwtDO-ruFqdxLt7dMWHL2i4Xey0m_wzLH_ukl9rW56jXeZ8g#t0010)
+
+# **Cycling E**
+
+NOTE: I am holding off on reporting on this until we have the updated behavioral data containing group scan observations of duck face....planning to adapt methods from [Sen et al. 2022](https://www.sciencedirect.com/science/article/pii/S0018506X22001581?casa_token=6acu1ntMv9UAAAAA:DE2kCyrQg3ooVPhuqtaTpwmtINgwtDO-ruFqdxLt7dMWHL2i4Xey0m_wzLH_ukl9rW56jXeZ8g#t0010)
+
+# **Pregnancy E**
+
+## Age at first birth
+
+Could you please share the estimated/confirmed ages of all of our IDs? I can't really assign this easily (unless I work backwards from age at sample info....). I know I had made a Google Sheet at some point with this information, but I no longer have access. Thanks!
+
+## Assigning gestation lengths
+
+Haven't looked into this yet...stay tuned.
+
+## E across trimesters
+
+**QUESTION**: I see some individuals are marekd as pregnant (e..g, `is_pregnant` = "P"), but the `preg_trim` column is blank. What do I do about this?
+
+For now, I'm excluding pregnant individuals with missing trimester info.
+
+### Step 1. Preparing dataset for pregnant individuals with known trimester info
+
+```{r}
+pregnant_df<-e_data |> 
+  select(ind_id, month, hour, age_at_sample, e_conc_ug, preg_trim, pregnancy_num, is_pregnant) |> 
+  filter(is_pregnant == "P") |> 
+  filter(preg_trim !="")
+
+n_pregnant_df <- nrow(pregnant_df)
+
+```
+
+### Step 2. Data visualization
+
+Note: y-axis is log-transformed
+
+```{r}
+par(mfrow = c(1,1))
+ggplot(data = pregnant_df, aes(x = preg_trim, y = log(e_conc_ug)))+
+  geom_boxplot()+
+  geom_jitter(alpha = 0.1)+
+  ggtitle(paste("Estradiol and gestation (N = ", n_pregnant_df, "samples)")) +
+  xlab("Pregnancy trimester")+
+  ylab("Log-transformed fecal estradiol (log(ug/g))")
+```
+
+### Step 3. Assessing normality
+
+Data is normal following log transformation
+
+```{r}
+shapiro.test(pregnant_df$e_conc_ug)
+shapiro.test(log(pregnant_df$e_conc_ug))
+```
+
+### Step 4. ANOVA and Tukey's HSD
+
+Among trimesters, we only see that T2 is significantly lower than T3; no significant difference between T1-T2 or T1-T3.
+
+```{r}
+anova_result_pregancy_e <- aov(log(e_conc_ug) ~ preg_trim, data = pregnant_df)
+
+summary(anova_result_pregancy_e)
+tukey_results_pregnancy_e <- TukeyHSD(anova_result_pregancy_e)
+print(tukey_results_pregnancy_e)
+```
+
+### Step 5: Modeling E2 across pregnancy
+
+```{r}
+## what other control variables should I include?
+unadjusted_pregnancy_model <- lmer(log(e_conc_ug) ~ age_at_sample + month+ hour+ (1 | ind_id), data = pregnant_df)
+
+adjusted_pregnancy_model <- lmer(log(e_conc_ug) ~ age_at_sample + month + hour+preg_trim + (1 | ind_id), data = pregnant_df)
+
+anova(unadjusted_pregnancy_model, adjusted_pregnancy_model) # adjusted model is better fit--pregnancy predicts E
+
+summary(adjusted_pregnancy_model)
+```
+
+### Step 6: Checking model diagnostics
+
+Tldr: model passes diagnostics—yay
+
+```{r}
+#checking for multicollinearity -- low (~ 1)
+vif(adjusted_pregnancy_model)
+
+# checking model diagnostics
+plot(adjusted_pregnancy_model) #resids vs leverage -- good
+lattice::qqmath(adjusted_pregnancy_model) ## qq norm plot -- good...small tail on right
+plot(adjusted_pregnancy_model, # scale location plot -- good
+     sqrt(abs(resid(.)))~fitted(.),
+     type=c("p","smooth"), col.line=1)
+```
+
+# **Lactation E** 
+
+## Step 1. Preparing dataset for lactating vs not lactating
+
+Only looking at adults (ages \>6)
+
+```{r}
+lactation_df <- e_data |> 
+  select(ind_id, month, hour, age_at_sample, e_conc_ug, lactating) |> 
+  filter(age_at_sample > 6)
+
+n_lactation_df<-nrow(lactation_df)
+```
+
+### Step 2. Data visualization
+
+Note: y-axis is log-transformed
+
+```{r}
+ggplot(data = lactation_df, aes(x = lactating, y = log(e_conc_ug)))+
+  geom_boxplot()+
+  geom_jitter(alpha = 0.1)+
+  ggtitle(paste("Estradiol and lactation (N = ", n_pregnant_df, "samples)")) +
+  xlab("Lactating")+
+  ylab("Log-transformed fecal estradiol (log(ug/g))")
+```
+
+### Step 3. Assessing normality
+
+Data is still not normal following log transformation
+
+```{r}
+shapiro.test(lactation_df$e_conc_ug)
+
+shapiro.test(log(lactation_df$e_conc_ug))
+```
+
+### Step 4. Mann Whitney U Test
+
+Data is not normal, so can't do ANOVA. Let's use a nonparametric approach to see if E is significantly lower during lactation....it is (W = 98014, p \< 0.001)
+
+```{r}
+wilcox.test(log(e_conc_ug) ~ lactating, data = lactation_df)
+```
+
+### Step 5. Modeling E2 and lactation
+
+Technically, data should be normal for this. BUT I think our sample might be large enough that we're okay violating this assumption?
+
+```{r}
+## what other control variables should I include?
+unadjusted_lactation_model <- lmer(log(e_conc_ug) ~ age_at_sample + month+ hour + (1 | ind_id), data = e_data)
+
+adjusted_lactation_model <- lmer(log(e_conc_ug) ~ age_at_sample + month+ hour + lactating + (1 | ind_id), data = e_data)
+
+anova(unadjusted_lactation_model,adjusted_lactation_model) # adjusted model is better fit--lactation predicts E
+
+summary(adjusted_lactation_model) # lactation = lower E
+
+```
+
+### Step 6. Checking model diagnostics
+
+Tldr: model passes diagnostics—yay
+
+```{r}
+#checking for multicollinearity -- low (~ 1)
+vif(adjusted_lactation_model)
+
+# checking model diagnostics
+plot(adjusted_lactation_model) #resids vs leverage -- good
+lattice::qqmath(adjusted_lactation_model) ## qq norm plot -- good...small tail on right
+plot(adjusted_lactation_model, # scale location plot -- good
+     sqrt(abs(resid(.)))~fitted(.),
+     type=c("p","smooth"), col.line=1)
+```
+
+# **Male takeovers and E**
+
+Can I please have access to these data?
