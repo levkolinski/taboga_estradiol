@@ -51,6 +51,10 @@ rsconnect/
 *.Rproj
 *.Rhistory
 *Data/
+*.png
+e-analyses.html
+e-analyses.Rmd
+
 
 
 
