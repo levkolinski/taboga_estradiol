@@ -185,19 +185,37 @@ females_for_menarche_panel<-e_data |>
   pull(ind_id)
 
 females_for_menarche_panel_df<- e_data |> 
-  filter(ind_id %in% females_for_menarche_panel) |> 
+  filter(ind_id %in% females_for_menarche_panel) |>
   filter(age_at_sample < 8) |>
   select(ind_id, age_at_sample, sample_id, date, month, time, hour, e_conc_ug, is_pregnant) |> 
-  arrange(ind_id, age_at_sample) 
+  arrange(ind_id, age_at_sample) |> 
+  mutate(date = as.Date(date))
+
 n_figure_2 <-nrow(females_for_menarche_panel_df)
 
+# facet wrap plots with geom_smooth
 ggplot(data = females_for_menarche_panel_df, aes(x = age_at_sample, y = log(e_conc_ug), color = ind_id)) +
   geom_point()+
   facet_wrap(~ ind_id)+
+  geom_smooth()+
   ggtitle(paste0("Estradiol by age at sample, separated by individual (n = ", n_figure_2, " samples)"))+
   xlab("Age at sample")+
   ylab("Log-transformed fecal estradiol (log(ug/g))")+
   theme(legend.position = "none")
+
+# Loop through each individual and create a ggplot for each
+for (individual in females_for_menarche_panel) {
+  individual_data <- females_for_menarche_panel_df |> filter(ind_id == individual)
+  
+  p <- ggplot(data = individual_data, aes(x = age_at_sample, y = log(e_conc_ug))) +
+    geom_point() +
+    ggtitle(paste0("Estradiol by age at sample for individual ", individual, " (n = ", nrow(individual_data), " samples)")) +
+    xlab("Age at sample") +
+    ylab("Log-transformed fecal estradiol (log(ug/g))") +
+    theme(legend.position = "none")+
+    geom_line(color = "blue")
+  print(p)
+}
 ```
 
 \^Note that the y-axis is log-transformed on this plot
@@ -254,6 +272,60 @@ NOTE: I am holding off on reporting on this until we have the updated behavioral
 # **Cycling E**
 
 NOTE: I am holding off on reporting on this until we have the updated behavioral data containing group scan observations of duck face....planning to adapt methods from [Sen et al. 2022](https://www.sciencedirect.com/science/article/pii/S0018506X22001581?casa_token=6acu1ntMv9UAAAAA:DE2kCyrQg3ooVPhuqtaTpwmtINgwtDO-ruFqdxLt7dMWHL2i4Xey0m_wzLH_ukl9rW56jXeZ8g#t0010)
+
+```{r}
+par(mfrow = c(1,1))
+
+# Panel of all individual females who have good E coverage before and after menarche
+females_for_cycling_panel<-e_data |> 
+  group_by(ind_id) |> 
+  filter(min(age_at_sample)>3) |> 
+  mutate(count = n()) |> 
+  ungroup() |> 
+  select(ind_id,count) |> 
+  arrange(desc(count)) |> 
+  distinct() |> 
+  filter(count>25) |> 
+  pull(ind_id)
+
+females_for_cycling_panel_df<- e_data |> 
+  filter(ind_id %in% females_for_cycling_panel) |>
+  mutate(date = as.Date(date)) |> 
+  filter(date > as.Date("2021-12-31")) |> 
+  select(ind_id, age_at_sample, sample_id, date, month, time, hour, e_conc_ug, is_pregnant) |> 
+  arrange(ind_id, age_at_sample) 
+n_figure_2 <-nrow(females_for_cycling_panel_df)
+
+create_continuous_segments <- function(df) {
+  df %>%
+    arrange(date) %>%
+    mutate(segment = cumsum(is_pregnant == "P") + 1) %>%
+    group_by(segment) %>%
+    filter(any(is_pregnant == "NP")) %>%
+    ungroup() %>%
+    mutate(segment = cumsum(is_pregnant == "P") + 1) %>%
+    filter(is_pregnant == "NP")
+}
+
+
+# Loop through each individual and create a ggplot for each
+for (individual in females_for_cycling_panel) {
+  individual_data <- females_for_cycling_panel_df |> filter(ind_id == individual)
+  
+  # Create continuous segments based on NP periods
+  segmented_data <- create_continuous_segments(individual_data)
+  
+  p <- ggplot(data = individual_data, aes(x = date, y = log(e_conc_ug))) +
+    geom_point(aes(color = is_pregnant)) +
+    ggtitle(paste0("Estradiol by age at sample for individual ", individual, " (n = ", nrow(individual_data), " samples)")) +
+    xlab("Date") +
+    ylab("Log-transformed fecal estradiol (log(ug/g))") +
+    theme(legend.position = "none") +
+    geom_line(data = segmented_data, aes(group = segment), color = "blue")  # Plot lines for continuous NP segments
+  
+  print(p)
+}
+```
 
 # **Pregnancy E**
 
