@@ -40,12 +40,12 @@ Adapting methods described in the poster uploaded on Google Drive, I first calcu
 
 Per Slack communication on 7/17: defining prebuteral E from individuals greater than 2.5 years (def not nursing) and under 3 (def not pubertal)
 
-#### Step 1: Preparing dataset of prepubertal individuals (2.5-3 yo)
+#### Step 1: Preparing dataset of prepubertal individuals (3 yo)
 
 ```{r,  class.source = 'fold-hide'}
 ## calculating average pre-pubertal E2 
 prepubertal_data<-e_data |> 
-  filter(age_at_sample >= 2.5 & age_at_sample <= 3) |>  # we want age 2.5-3...def pre menstruation
+  filter(age_at_sample >= 3.0 & age_at_sample <4) |>  # we want age 3..def pre menstruation
   select(ind_id, age_at_sample, e_conc_ug) 
 ```
 
@@ -92,17 +92,35 @@ e_data_age_at_menarche_df <- e_data |>
   arrange(age_at_sample_years) |>
   distinct() 
 
+
+
+# Identify the first age where e_conc_ug rises above the threshold for each individual
+first_above_threshold <- e_data %>%
+  group_by(ind_id) %>%
+  filter(min(age_at_sample) <= 4) |> 
+  ungroup() |> 
+  filter(e_conc_ug > calculated_treshold) %>%
+  group_by(ind_id) %>%
+  summarise(first_age_above_threshold = min(age_at_sample, na.rm = TRUE)) %>%
+  ungroup()
+
+# Calculate the mean and standard error of the ages
+mean_age_above_threshold <- mean(first_above_threshold$first_age_above_threshold, na.rm = TRUE)
+se_age_above_threshold <- sd(first_above_threshold$first_age_above_threshold, na.rm = TRUE) / sqrt(nrow(first_above_threshold))
+
+print(paste("Average age at which e_conc_ug rises above the threshold: ", mean_age_above_threshold))
+print(paste("Standard error of the average age: ", se_age_above_threshold))
 ## average_age_at_menarche----
 average_age_at_menarche <- e_data_age_at_menarche_df |> 
-  filter(age_at_sample > 3) |> 
+  # filter(age_at_sample > 4) |> 
   filter(mean_e_at_age > calculated_treshold) |> 
-  slice(1) |> 
+  slice(2)  
   pull(age_at_sample)
 
 
 # standard error of average_age_at_menarche
 se_age_at_menarche <- e_data_age_at_menarche_df |> 
-  filter(age_at_sample > 3) |> 
+  filter(age_at_sample > 4) |> 
   filter(mean_e_at_age > calculated_treshold) |> 
   summarise(se_age_at_sample = sd(age_at_sample, na.rm = TRUE) / sqrt(n())) |> 
   pull(se_age_at_sample)

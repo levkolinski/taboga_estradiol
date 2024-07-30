@@ -4,8 +4,9 @@ set.seed(1234)
 # Loading data ----
 e_data<-read.csv("/Users/levkolinski/Desktop/taboga_estradiol/Data/estradiol_dataset.csv", sep = ";")
 duckface_data<-read.csv("/Users/levkolinski/Desktop/taboga_estradiol/Data/duckfaces_dataset.csv", sep = ";")
-head(duckface_data)
-
+groupscan_duckface_data <- read.csv("/Users/levkolinski/Downloads/combined_scan2018_to_2023.csv", sep = ";") 
+  # filter(grepl("uckface", ScanBehaviorType))
+View(groupscan_duckface_data)
 # ## removing outlier E2 values ----
 # e_data_outliers <- e_data |> 
 #   filter(e_conc_ug < (quantile(e_conc_ug, 0.25) - 1.5 * IQR(e_conc_ug)) |
@@ -156,7 +157,7 @@ first_duckface_data <- duckface_data |>
   rename("ind_id" = Actor) |> 
   rename("first_duckface_date" = Date)
 
-
+View(first_duckface_data)
 calculate_first_rise <- function(df) {
   df %>%
     group_by(ind_id) |> 
@@ -175,7 +176,7 @@ first_rise_data <- e_data %>%
   select(ind_id, First_Rise_Date = date, age_at_sample) |> 
   filter(ind_id %in% females_for_menarche_panel)
 
-
+View(first_rise_data)
 
 merged_data <- left_join(first_duckface_data, first_rise_data, by = "ind_id")
 

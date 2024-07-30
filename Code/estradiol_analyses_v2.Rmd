@@ -1,0 +1,744 @@
+---
+title: "Estradiol analyses"
+author: "Lev Kolinski"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+# loading packages
+library(tidyverse)
+library(lme4)
+library(car)
+
+# setting seed for reproducibility
+set.seed(1234)
+
+# Loading data
+e_data<-read.csv("/Users/levkolinski/Desktop/taboga_estradiol/Data/estradiol_dataset.csv", sep = ";") 
+
+e_data<-e_data |> 
+  ## adding in age year column
+  mutate(age_at_sample_years = as.numeric(sub("\\..*", "", age_at_sample))) |> 
+  ## adding in hour column to account for diurnal variation
+  mutate(hour = as.numeric(str_extract(time, "^[^:]+"))) 
+  
+
+duckface_data<-read.csv("/Users/levkolinski/Desktop/taboga_estradiol/Data/duckfaces_dataset.csv", sep = ";")
+
+duckface_data$Date<-as.Date(duckface_data$Date)
+duckface_data<-duckface_data |> 
+  rename("ind_id" = Actor) |> 
+  rename("date" = Date) |> 
+  select(ind_id, date, age_at_sample)
+```
+
+# **Menarche and E**
+
+## Age at menarche on the population-level
+
+### Approach 1: Mean + 2SD
+
+Adapting methods described in the poster uploaded on Google Drive, I first calculated the mean pre-pubertal fE2 concentration. Because infants/juvs have elevated fE2 when nursing, we need to exclude these individuals when determining what typical pre-pubertal fE2 looks like.
+
+~~Per Slack communication on 7/17: defining prebuteral E from individuals greater than 2.5 years (def not nursing) and under 3 (def not pubertal)~~
+
+Per Zoom meeting on 7/22: defining prepubertal E from individuals between 3 and 4 years old.
+
+#### Step 1: Preparing dataset of prepubertal individuals (3 yo)
+
+```{r,  class.source = 'fold-hide'}
+## calculating average pre-pubertal E2 
+prepubertal_data<-e_data |> 
+  filter(age_at_sample >= 3.0 & age_at_sample <4) |>  # we want age 3..def pre menstruation
+  select(ind_id, age_at_sample, e_conc_ug) 
+```
+
+#### Step 2: Calculating average prepubertal E
+
+```{r}
+prepubertal_e_data <- prepubertal_data |> 
+   summarise(mean_e_conc_ug = mean(e_conc_ug, na.rm = TRUE),
+            sd_e_conc_ug = sd(e_conc_ug, na.rm = TRUE)) 
+
+mean_prepubertal_e_conc_ug <- prepubertal_e_data$mean_e_conc_ug
+sd_prepubertal_e_conc_ug <- prepubertal_e_data$sd_e_conc_ug
+```
+
+#### Step 3: Calculating pubertal threshold E
+
+Using the mean + 2SD approach:
+
+```{r}
+calculated_treshold <- mean_prepubertal_e_conc_ug + 2*sd_prepubertal_e_conc_ug
+
+print(paste("Calculated fE2 threshold for menarche: ", calculated_treshold, " ug/g"))
+```
+
+#### Step 4: Calculating population average age at menarche based on threshold E
+
+Looking at the average age at which the population has an E reading that crosses the threshold E. Restricting dataset to individuals who we started sampling pre menstruation (before age 3.75); only looking for
+
+```{r}
+# Identify the first age where e_conc_ug rises above the threshold for each individual
+first_above_threshold <- e_data %>%
+  group_by(ind_id) %>%
+  filter(min(age_at_sample) <= 3.75) |> # want to make sure we have samples starting before menstruation to assign cutoff age 
+  ungroup() |> 
+  filter(age_at_sample>3.75) |> # only considering potentially pubescent if older than 4
+  filter(e_conc_ug > calculated_treshold) %>%
+  group_by(ind_id) %>%
+  summarise(first_age_above_threshold = min(age_at_sample, na.rm = TRUE)) %>%
+  ungroup()
+
+# Calculate the mean and standard error of the ages
+mean_age_above_threshold <- mean(first_above_threshold$first_age_above_threshold, na.rm = TRUE)
+se_age_above_threshold <- sd(first_above_threshold$first_age_above_threshold, na.rm = TRUE) / sqrt(nrow(first_above_threshold))
+
+print(paste("Average age at which e_conc_ug rises above the threshold: ", mean_age_above_threshold))
+print(paste("Standard error of the average age: ", se_age_above_threshold))
+```
+
+### Plot of fE2 as a function of age: population-level
+
+For interpretability, this plot just has the data sorted into age-years, rather than exact age estimations with lots of decimals
+
+```{r, class.source = 'fold-hide'}
+e_data_for_menarche <- e_data %>%
+  filter(age_at_sample<8) |> 
+  mutate(age_group = cut(age_at_sample, breaks = seq(0, max(age_at_sample, na.rm = TRUE) + 1, by = 1), right = FALSE))
+
+## get sample size ----
+n_figure_1 <- nrow(e_data_for_menarche)
+
+##Figure 1
+par(mfrow = c(1,1))
+
+
+
+# Calculating mean and standard error for each age group
+age_summary <- e_data_for_menarche %>%
+  group_by(age_group) %>%
+  summarise(
+    mean_e_at_age_years = mean(e_conc_ug, na.rm = TRUE),
+    se_e_at_age_years = sd(e_conc_ug, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  ungroup()
+
+print("Grouping ages into years")
+ggplot(data = age_summary, aes(x = as.factor(age_group), y = mean_e_at_age_years)) + 
+  geom_smooth() + 
+  geom_point() +
+  geom_vline(xintercept = mean_age_above_threshold, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = calculated_treshold, linetype = "dashed", color = "skyblue") +
+  geom_errorbar(aes(ymin = mean_e_at_age_years - se_e_at_age_years, ymax = mean_e_at_age_years + se_e_at_age_years), width = 0.2) +
+  geom_rect(aes(xmin = mean_age_above_threshold - 1.96 * se_age_above_threshold, xmax = mean_age_above_threshold + 1.96 * se_age_above_threshold, 
+                ymin = -Inf, ymax = Inf), alpha = 0.05, fill = "pink") +
+  ggtitle(paste0("Average estradiol by age at sample (N = ", n_figure_1, " samples)")) +
+  xlab("Age at sample (years)") +
+  ylab("Fecal estradiol (ug/g)")
+
+print("Putting all data points and applying a smoothing function")
+ggplot(data = e_data_for_menarche, aes(x = age_at_sample, y = e_conc_ug)) + 
+  geom_smooth()+
+  geom_point()+
+  geom_vline(xintercept = mean_age_above_threshold, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = calculated_treshold, linetype = "dashed", color = "skyblue") +
+  # geom_errorbar(aes(ymin = mean_e_at_age_years - se_e_at_age_years, ymax = mean_e_at_age_years + se_e_at_age_years), width = 0.2) +
+  geom_rect(aes(xmin = mean_age_above_threshold - 1.96 * se_age_above_threshold, xmax = mean_age_above_threshold + 1.96 * se_age_above_threshold, 
+                ymin = -Inf, ymax = Inf), alpha = 0.01, fill = "pink") +
+  ggtitle(paste0("Average estradiol by age at sample (N = ", n_figure_1, " samples)")) +
+  xlab("Age at sample (years)") +
+  ylab("Fecal estradiol (ug/g)")
+
+print("Showing all datapoints with box plots for age-year groupings and smoothing")
+ggplot(data = e_data_for_menarche, aes(x = as.factor(floor(age_at_sample+1)), y = e_conc_ug)) +
+  geom_point(data = e_data_for_menarche, aes(x = age_at_sample, y = e_conc_ug),
+             alpha = 0.2, color = "green") +
+    geom_boxplot() +
+  geom_smooth(data = age_summary, aes(x = as.numeric(age_group), y = mean_e_at_age_years), method = "loess", color = "blue") +
+  geom_vline(xintercept = mean_age_above_threshold, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = calculated_treshold, linetype = "dashed", color = "skyblue") +
+  geom_rect(aes(xmin = mean_age_above_threshold - 1.96 * se_age_above_threshold, xmax = mean_age_above_threshold + 1.96 * se_age_above_threshold, 
+                ymin = -Inf, ymax = Inf), alpha = 0.01, fill = "pink") +
+  ggtitle(paste0("Estradiol levels by age at sample (N = ", n_figure_1, " samples)")) +
+  xlab("Age at sample (years)") +
+  ylab("Fecal estradiol (ug/g)") +
+  scale_x_discrete(labels = c("0-1", "1-2", "2-3", "3-4", "4-5", "5-6", "6-7", "7-8", "8-9", "9-10"))
+
+
+# ggplot(data = e_data |> 
+#          filter(age_at_sample<10) |> 
+#          select(age_at_sample_years, mean_e_at_age_years, se_e_at_age_years) |> 
+#          distinct(), aes(x = age_at_sample_years, y = mean_e_at_age_years)) + 
+#   geom_smooth() + 
+#   geom_point()+
+#   geom_vline(xintercept = mean_age_above_threshold, linetype = "dashed", color = "red") +
+#   geom_hline(yintercept = calculated_treshold, linetype = "dashed", color = "skyblue") +
+#   geom_errorbar(aes(ymin = mean_e_at_age_years - se_e_at_age_years, ymax = mean_e_at_age_years + se_e_at_age_years), width = 0.2) +
+#   geom_rect(aes(xmin = mean_age_above_threshold - 1.96*se_age_at_menarche, xmax = mean_age_above_threshold + 1.96*se_age_at_menarche, 
+#                 ymin = -Inf, ymax = Inf), alpha = 0.05, fill = "pink") +
+#   ggtitle(paste0("Average estradiol by age at sample (N = ", n_figure_1, " samples)"))+
+#   xlab("Age at sample")+
+#   ylab("Fecal estradiol (ug/g)")
+```
+
+\
+\
+
+Interpreting the graph:
+
+-   The black circles and error bars represent the average age fE2 reading (with standard error) for each age-year for the population
+
+-   The blue line represents the results of a Loess regression, a non-parametric approach to modeling the relationship between x and y. The gray shading around the blue line is the error of the estimate.
+
+-   The dashed light blue line is the calculated prepubertal fE threshold (y = 2.845277 ug/g)
+
+-   The dashed red line is the calculated average age at puberty (x = 4.641429 years)
+
+-   The shaded area around the dashed red line is the 95% CI for the average age at puberty estimate (3.22 ± 1.96\* SE)
+
+## Age at menarche on the individual-level
+
+### Plot of fE2 as a function of age: individual-level
+
+NOTE: I haven't yet calculated individual E thresholds/ages at menarche because I think we are going to want a different approach than mean + 2sd....still working on that.
+
+I am pulling data on females that we have good E coverage for before and after potential menarche...I'm looking for IDs with samples starting at least by age 3. At least 25 samples per ID. That leaves us with the following:
+
+```{r,class.source = 'fold-hide', warning = FALSE}
+par(mfrow = c(1,1))
+
+# Panel of all individual females who have good E coverage before and after menarche
+females_for_menarche_panel<-e_data |> 
+  group_by(ind_id) |> 
+  filter(min(age_at_sample)<3) |>
+  mutate(count = n()) |> 
+  ungroup() |> 
+  select(ind_id,count) |> 
+  arrange(desc(count)) |> 
+  distinct() |> 
+  filter(count>25) |> 
+  pull(ind_id)
+
+females_for_menarche_panel_df<- e_data |> 
+  filter(ind_id %in% females_for_menarche_panel) |>
+  filter(age_at_sample < 8) |>
+  select(ind_id, age_at_sample, sample_id, date, month, time, hour, e_conc_ug, is_pregnant) |> 
+  arrange(ind_id, age_at_sample) |> 
+  mutate(date = as.Date(date))
+
+n_figure_2 <-nrow(females_for_menarche_panel_df)
+
+# facet wrap plots with geom_smooth
+ggplot(data = females_for_menarche_panel_df, aes(x = age_at_sample, y = e_conc_ug, color = ind_id)) +
+  geom_point()+
+  facet_wrap(~ ind_id)+
+  geom_smooth()+
+  ggtitle(paste0("Estradiol by age at sample, separated by individual (n = ", n_figure_2, " samples)"))+
+  xlab("Age at sample")+
+  ylab("Fecal estradiol (ug/g)")+
+  theme(legend.position = "none")
+
+# Loop through each individual and create a ggplot for each
+for (individual in females_for_menarche_panel) {
+  individual_data <- females_for_menarche_panel_df |> 
+    filter(ind_id == individual)
+  
+  # Get the age at which estradiol first exceeds the threshold for this individual
+  first_above_threshold_age_by_id <- first_above_threshold |> 
+    filter(ind_id == individual) |> 
+    pull(first_age_above_threshold)
+  
+  print(paste0("Age at menarche for ", individual,": ", first_above_threshold_age_by_id))
+  
+  # Get duckface dates
+  duckface_ages <- duckface_data %>%
+    filter(ind_id == individual) %>%
+    pull(age_at_sample)
+  
+  
+  # Create the plot
+  p <- ggplot(data = individual_data, aes(x = age_at_sample, y = e_conc_ug)) +
+    geom_point() +
+    geom_line(color = "blue") +
+    geom_vline(xintercept = first_above_threshold_age_by_id, 
+               linetype = "dashed", color = "red") +
+     geom_vline(xintercept = as.numeric(duckface_ages), linetype = "solid", color = "purple") +  # Add vertical lines for duckface dates
+    ggtitle(paste0("Estradiol by age at sample for individual ", individual, " (n = ", nrow(individual_data), " samples)")) +
+    xlab("Age at sample") +
+    ylab("Fecal estradiol (ug/g)") +
+    theme(legend.position = "none")
+  
+  print(p)
+}
+```
+
+### Modeling E and age
+
+#### Step 1. Assessing normality
+
+```{r}
+shapiro.test(females_for_menarche_panel_df$e_conc_ug) #nope
+ 
+shapiro.test(log(females_for_menarche_panel_df$e_conc_ug)) # log transformation does the trick!
+```
+
+Log transformation does the trick! Data is now normal for our young female panel.
+
+#### Step 2. Modeling E2 and age
+
+I am including individual ID as a random effect. In unadjusted model, fixed effects are month and time of day (accounting for seasonality and diurnal variation) with individual ID included as a random effect. Any other things to control for?\
+\
+The adjusted model includes age as a fixed effect. Age improves the model fit!
+
+```{r}
+unadjusted_e_model <- lmer(log(e_conc_ug) ~  + month + hour+ (1 | ind_id), data = females_for_menarche_panel_df)
+
+adjusted_e_model <- lmer(log(e_conc_ug) ~ age_at_sample + month + hour+ (1 | ind_id), data = females_for_menarche_panel_df)
+
+anova(unadjusted_e_model, adjusted_e_model) # adjusted_e_model fits better
+
+summary(adjusted_e_model)
+
+#checking for multicollinearity -- low (~ 1)
+vif(adjusted_e_model)
+print("No multicollinearity -- yay!")
+```
+
+#### Step 3. Checking model diagnostics
+
+Tldr: model passes diagnostics—yay
+
+```{r}
+# checking model diagnostics
+plot(adjusted_e_model) #resids vs leverage -- pretty good
+lattice::qqmath(adjusted_e_model) ## qq norm plot -- good
+plot(adjusted_e_model, # scale location plot -- pretty good
+     sqrt(abs(resid(.)))~fitted(.),
+     type=c("p","smooth"), col.line=1)
+```
+
+## Menarche and Duck Face
+
+NOTE: I am holding off on reporting on this until we have the updated behavioral data containing group scan observations of duck face....planning to adapt methods from [Sen et al. 2022](https://www.sciencedirect.com/science/article/pii/S0018506X22001581?casa_token=6acu1ntMv9UAAAAA:DE2kCyrQg3ooVPhuqtaTpwmtINgwtDO-ruFqdxLt7dMWHL2i4Xey0m_wzLH_ukl9rW56jXeZ8g#t0010)
+
+# **Cycling E**
+
+## Establish Cycle Length
+
+```{r warning = FALSE,  message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(zoo) # For rollapply
+# Panel of all individual females who have good E coverage before and after menarche
+females_for_cycling_panel<-e_data |> 
+  group_by(ind_id) |> 
+  filter(min(age_at_sample)>3) |> 
+  mutate(count = n()) |> 
+  ungroup() |> 
+  select(ind_id,count) |> 
+  arrange(desc(count)) |> 
+  distinct() |> 
+  filter(count>25) |> 
+  pull(ind_id)
+
+females_for_cycling_panel_df<- e_data |> 
+  filter(ind_id %in% females_for_cycling_panel) |>
+  mutate(date = as.Date(date)) |> 
+  filter(date > as.Date("2021-12-31")) |> 
+  select(ind_id, age_at_sample, sample_id, date, month, time, hour, e_conc_ug, is_pregnant) |> 
+  arrange(ind_id, age_at_sample) 
+n_figure_2 <-nrow(females_for_cycling_panel_df)
+
+create_continuous_segments <- function(df) {
+  df %>%
+    arrange(date) %>%
+    mutate(segment = cumsum(is_pregnant == "P") + 1) %>%
+    group_by(segment) %>%
+    filter(any(is_pregnant == "NP")) %>%
+    ungroup() %>%
+    mutate(segment = cumsum(is_pregnant == "P") + 1) %>%
+    filter(is_pregnant == "NP")
+}
+
+# Function to find local peaks
+find_peaks <- function(df) {
+  df %>%
+    arrange(date) %>%
+    mutate(peak = rollapply(e_conc_ug, width = 3, FUN = function(x) x[2] == max(x), fill = NA, align = 'center')) %>%
+    filter(peak == TRUE) %>%
+    select(ind_id, date, e_conc_ug, is_pregnant)
+}
+
+# Function to calculate cycle lengths
+calculate_cycle_lengths <- function(df) {
+  df <- df |> 
+    filter(is_pregnant == "NP")
+  
+  peaks <- find_peaks(df)
+  peaks <- peaks %>%
+    arrange(date) %>%
+    mutate(next_date = lead(date)) %>%
+    mutate(cycle_length = as.numeric(difftime(next_date, date, units = "days"))) %>%
+    filter(!is.na(cycle_length))
+  
+  # Filter to only include cycle lengths within 45 days
+  valid_cycles <- peaks %>%
+    filter(cycle_length <= 45)
+  
+  # Calculate average cycle length
+  avg_cycle_length <- valid_cycles %>%
+    summarise(avg_cycle_length = mean(cycle_length, na.rm = TRUE))
+  
+  return(avg_cycle_length)
+}
+
+# Loop through each individual and create a ggplot for each
+for (individual in females_for_cycling_panel) {
+  individual_data <- females_for_cycling_panel_df %>%
+    filter(ind_id == individual)
+  
+  # Calculate cycle lengths for this individual
+  cycle_lengths <- calculate_cycle_lengths(individual_data)
+  
+  # Create continuous segments based on NP periods
+  segmented_data <- create_continuous_segments(individual_data)
+  
+ p<-ggplot(data = individual_data, aes(x = date, y = e_conc_ug)) +
+    geom_point(aes(color = is_pregnant)) +
+    ggtitle(paste0("Estradiol by date for individual ", individual, " (n = ", nrow(individual_data), " samples)")) +
+    xlab("Date") +
+    ylab("Fecal estradiol (ug/g)") +
+    theme(legend.position = "none") +
+    geom_line(data = segmented_data, aes(group = segment), color = "blue") +  # Plot lines for continuous NP segments
+       geom_vline(xintercept = as.Date(cycle_lengths$avg_cycle_length), linetype = "dashed", color = "green")
+
+  print(p)
+  
+  # Print cycle lengths for this individual
+  print(paste0("Average cycle length for individual ", individual, ": ", cycle_lengths$avg_cycle_length, " days"))
+}
+
+```
+
+## Visualizing cycle E and Duckface
+
+Purple lines = observed duck face
+
+```{r warning = FALSE, message=FALSE}
+
+for (individual in females_for_cycling_panel) {
+  individual_data <- females_for_cycling_panel_df %>%
+    filter(ind_id == individual)
+  
+  # Calculate cycle lengths for this individual
+  cycle_lengths <- calculate_cycle_lengths(individual_data)
+  
+  # Create continuous segments based on NP periods
+  segmented_data <- create_continuous_segments(individual_data)
+  
+  # Get duckface dates for this individual
+  duckface_dates <- duckface_data %>%
+    filter(ind_id == individual) %>%
+    pull(date)
+  
+  
+  p <- ggplot(data = individual_data, aes(x = date, y = e_conc_ug)) +
+    geom_point(aes(color = is_pregnant)) +
+    ggtitle(paste0("Estradiol by date for individual ", individual, " (n = ", nrow(individual_data), " samples)")) +
+    xlab("Date") +
+    ylab("Fecal estradiol (ug/g)") +
+    theme(legend.position = "none") +
+    geom_line(data = segmented_data, aes(group = segment), color = "blue") +  # Plot lines for continuous NP segments
+    geom_vline(xintercept = as.numeric(duckface_dates), linetype = "solid", color = "purple") +  # Add vertical lines for duckface dates
+    geom_vline(xintercept = as.Date(cycle_lengths$avg_cycle_length), linetype = "dashed", color = "green")
+
+  print(p)
+  
+  # Print cycle lengths for this individual
+  print(paste0("Average cycle length for individual ", individual, ": ", cycle_lengths$avg_cycle_length, " days"))
+}
+```
+
+### Testing association between duckface and E Peaks
+
+```{r}
+
+# Combine data from all individuals
+all_peaks <- data.frame()
+all_duckface_events <- data.frame()
+
+for (individual in females_for_cycling_panel) {
+  individual_data <- females_for_cycling_panel_df %>%
+    filter(ind_id == individual)
+  
+  # Find peaks for this individual
+  peaks <- find_peaks(individual_data)
+  all_peaks <- rbind(all_peaks, peaks)
+  
+  # Get duckface dates for this individual
+  duckface_dates <- duckface_data %>%
+    filter(ind_id == individual) %>%
+    pull(date)
+  
+  duckface_events <- data.frame(ind_id = individual, date = duckface_dates)
+  all_duckface_events <- rbind(all_duckface_events, duckface_events)
+}
+
+# Check for duckface events within ±4 days of peak estradiol dates
+all_peaks <- all_peaks %>%
+  mutate(duckface_within_4_days = sapply(date, function(peak_date) {
+    any(abs(difftime(all_duckface_events$date[all_duckface_events$ind_id == ind_id], peak_date, units = "days")) <= 4)
+  }))
+
+# Summarize results
+summary_table <- all_peaks %>%
+  group_by(ind_id) %>%
+  summarise(
+    total_peaks = n(),
+    peaks_with_duckface = sum(duckface_within_4_days),
+    proportion_with_duckface = mean(duckface_within_4_days)
+  )
+
+# Perform statistical test
+# Create a contingency table
+contingency_table <- table(all_peaks$duckface_within_4_days)
+# Perform chi-squared test
+chi_squared_test <- chisq.test(contingency_table)
+
+# Print results
+print(summary_table)
+print(chi_squared_test)
+
+```
+
+# **Pregnancy E**
+
+## Age at first birth
+
+Could you please share the estimated/confirmed ages of all of our IDs? I can't really assign this easily (unless I work backwards from age at sample info....). I know I had made a Google Sheet at some point with this information, but I no longer have access. Thanks!
+
+## Assigning gestation lengths
+
+```{r}
+e_data <- e_data %>%
+  mutate(across(c(B2,B3,B4), ~ na_if(.x, " ")))
+
+e_data$B1 <- as.Date(e_data$B1)
+e_data$B2 <- as.Date(e_data$B2)
+e_data$B3 <- as.Date(e_data$B3)
+e_data$B4 <- as.Date(e_data$B4)
+
+e_data$date <- as.Date(e_data$date)
+# # Calculate the difference in months
+# 
+gestation_df_long <- e_data %>%
+   pivot_longer(cols = c(B1, B2, B3, B4), names_to = "birth_number", values_to = "birthing_date")
+
+gestation_df <- gestation_df_long |> 
+  mutate(months_from_birth = interval(date, birthing_date) / months(1)) |> 
+  select(ind_id, age_at_sample, month, months_from_birth, e_conc_ug, birth_number)
+
+gestating_df<- gestation_df |> 
+  filter(months_from_birth >= 0 & months_from_birth <= 9) |> 
+  mutate(months_from_birth = -1*months_from_birth)
+
+gestating_df_females<-gestating_df |> 
+  distinct(ind_id) |> 
+  pull(ind_id) 
+
+not_gestating_df<-gestation_df |> 
+  filter(is.na(months_from_birth) | months_from_birth > 9)  |> 
+  filter(age_at_sample > 6) |> 
+  group_by(ind_id) |> 
+  summarise(non_gestating_e2 = mean(e_conc_ug))
+
+  
+# Plot the data for each individual
+for (individual in gestating_df_females) {
+  individual_data <- gestating_df %>%
+    filter(ind_id == individual)
+  
+  # Establish baseline E2 for the individual
+  baseline_e <- not_gestating_df |> 
+    filter(ind_id == individual) |>
+    pull(non_gestating_e2)
+  
+  p <- ggplot(data = individual_data, aes(x = months_from_birth, y = e_conc_ug, color = birth_number, linetype = birth_number)) +
+    geom_point() +
+    geom_line() +
+    geom_hline(yintercept = baseline_e, linetype = "dashed", color = "green") +
+    ggtitle(paste0("Estradiol and gestation for ", individual, " (n = ", nrow(individual_data), " samples)")) +
+    xlab("Months from birth") +
+    ylab("Fecal estradiol (ug/g)") +
+    ylim(0, 150) +
+    xlim(-9, 0) +
+    theme(legend.position = "right") +
+    labs(color = "Birth Number", linetype = "Birth Number")
+
+  print(p)
+}
+```
+
+## E across trimesters
+
+**QUESTION**: I see some individuals are marekd as pregnant (e..g, `is_pregnant` = "P"), but the `preg_trim` column is blank. What do I do about this?
+
+For now, I'm excluding pregnant individuals with missing trimester info.
+
+### Step 1. Preparing dataset for pregnant individuals with known trimester info
+
+```{r}
+pregnant_df<-e_data |> 
+  select(ind_id, month, hour, age_at_sample, e_conc_ug, preg_trim, pregnancy_num, is_pregnant) |> 
+  filter(is_pregnant == "P") |> 
+  filter(preg_trim !="")
+
+n_pregnant_df <- nrow(pregnant_df)
+
+```
+
+### Step 2. Data visualization
+
+```{r}
+par(mfrow = c(1,1))
+ggplot(data = pregnant_df, aes(x = preg_trim, y = e_conc_ug))+
+  geom_boxplot()+
+  geom_jitter(alpha = 0.1)+
+  ggtitle(paste("Estradiol and gestation (N = ", n_pregnant_df, "samples)")) +
+  xlab("Pregnancy trimester")+
+  ylab("Fecal estradiol (ug/g)")
+```
+
+### Step 3. Assessing normality
+
+Data is normal following log transformation
+
+```{r}
+shapiro.test(pregnant_df$e_conc_ug)
+shapiro.test(log(pregnant_df$e_conc_ug))
+```
+
+### Step 4. ANOVA and Tukey's HSD
+
+Among trimesters, we only see that T2 is significantly lower than T3; no significant difference between T1-T2 or T1-T3.
+
+```{r}
+anova_result_pregancy_e <- aov(log(e_conc_ug) ~ preg_trim, data = pregnant_df)
+
+summary(anova_result_pregancy_e)
+tukey_results_pregnancy_e <- TukeyHSD(anova_result_pregancy_e)
+print(tukey_results_pregnancy_e)
+```
+
+### Step 5: Modeling E2 across pregnancy
+
+```{r}
+## what other control variables should I include?
+unadjusted_pregnancy_model <- lmer(log(e_conc_ug) ~ age_at_sample + month+ hour+ (1 | ind_id), data = pregnant_df)
+
+adjusted_pregnancy_model <- lmer(log(e_conc_ug) ~ age_at_sample + month + hour+preg_trim + (1 | ind_id), data = pregnant_df)
+
+anova(unadjusted_pregnancy_model, adjusted_pregnancy_model) # adjusted model is better fit--pregnancy predicts E
+
+summary(adjusted_pregnancy_model)
+```
+
+### Step 6: Checking model diagnostics
+
+Tldr: model passes diagnostics—yay
+
+```{r}
+#checking for multicollinearity -- low (~ 1)
+vif(adjusted_pregnancy_model)
+
+# checking model diagnostics
+plot(adjusted_pregnancy_model) #resids vs leverage -- good
+lattice::qqmath(adjusted_pregnancy_model) ## qq norm plot -- good...small tail on right
+plot(adjusted_pregnancy_model, # scale location plot -- good
+     sqrt(abs(resid(.)))~fitted(.),
+     type=c("p","smooth"), col.line=1)
+```
+
+# **Lactation E** 
+
+## Step 1. Preparing dataset for lactating vs not lactating
+
+Only looking at adults (ages \>6)
+
+```{r}
+lactation_df <- e_data |> 
+  select(ind_id, month, hour, age_at_sample, e_conc_ug, lactating) |> 
+  filter(age_at_sample > 6)
+
+n_lactation_df<-nrow(lactation_df)
+```
+
+### Step 2. Data visualization
+
+```{r}
+ggplot(data = lactation_df, aes(x = lactating, y = e_conc_ug))+
+  geom_boxplot()+
+  geom_jitter(alpha = 0.1)+
+  ggtitle(paste("Estradiol and lactation (N = ", n_pregnant_df, "samples)")) +
+  xlab("Lactating")+
+  ylab("Fecal estradiol (ug/g)")
+```
+
+### Step 3. Assessing normality
+
+Data is still not normal following log transformation
+
+```{r}
+shapiro.test(lactation_df$e_conc_ug)
+
+shapiro.test(log(lactation_df$e_conc_ug))
+```
+
+### Step 4. Mann Whitney U Test
+
+Data is not normal, so can't do ANOVA. Let's use a nonparametric approach to see if E is significantly lower during lactation....it is (W = 98014, p \< 0.001)
+
+```{r}
+wilcox.test(log(e_conc_ug) ~ lactating, data = lactation_df)
+```
+
+### Step 5. Modeling E2 and lactation
+
+Technically, data should be normal for this. BUT I think our sample might be large enough that we're okay violating this assumption?
+
+```{r}
+## what other control variables should I include?
+unadjusted_lactation_model <- lmer(log(e_conc_ug) ~ age_at_sample + month+ hour + (1 | ind_id), data = e_data)
+
+adjusted_lactation_model <- lmer(log(e_conc_ug) ~ age_at_sample + month+ hour + lactating + (1 | ind_id), data = e_data)
+
+anova(unadjusted_lactation_model,adjusted_lactation_model) # adjusted model is better fit--lactation predicts E
+
+summary(adjusted_lactation_model) # lactation = lower E
+
+```
+
+### Step 6. Checking model diagnostics
+
+Tldr: model passes diagnostics—yay
+
+```{r}
+#checking for multicollinearity -- low (~ 1)
+vif(adjusted_lactation_model)
+
+# checking model diagnostics
+plot(adjusted_lactation_model) #resids vs leverage -- good
+lattice::qqmath(adjusted_lactation_model) ## qq norm plot -- good...small tail on right
+plot(adjusted_lactation_model, # scale location plot -- good
+     sqrt(abs(resid(.)))~fitted(.),
+     type=c("p","smooth"), col.line=1)
+```
+
+# **Male takeovers and E**
+
+Can I please have access to these data?
